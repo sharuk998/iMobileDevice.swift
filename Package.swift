@@ -170,12 +170,46 @@ let package = Package(
             ]
 		),
 
+        // MARK: ---- Backup Wrapper (C) ----
+        // This target compiles idevicebackup2.c so we can call its main() function directly
+        
+        .target(
+            name: "BackupWrapper",
+            dependencies: [
+                "iMobileDevice"
+            ],
+            path: "Sources",
+            sources: [
+                "libimobiledevice/dependencies/libimobiledevice/tools/idevicebackup2.c"
+            ],
+            publicHeadersPath: "iMobileDeviceCLI",
+            cSettings: [
+                .headerSearchPath("libimobiledevice/dependencies/libimobiledevice"),
+                .headerSearchPath("libimobiledevice/dependencies/libimobiledevice/include"),
+                .headerSearchPath("libimobiledevice/dependencies/libimobiledevice/include/libimobiledevice"),
+                .headerSearchPath("libimobiledevice/dependencies/libimobiledevice/common"),
+                .headerSearchPath("libimobiledevice/dependencies/libimobiledevice-glue/include"),
+                .headerSearchPath("libimobiledevice/dependencies/libusbmuxd/include"),
+                .headerSearchPath("libimobiledevice/dependencies/libplist/include"),
+                .define("HAVE_OPENSSL"),
+                .define("TOOL_NAME", to: "\"idevicebackup2\""),
+                .define("PACKAGE_VERSION", to: "\"1.0.0\""),
+                .define("PACKAGE_URL", to: "\"https://github.com/libimobiledevice/libimobiledevice\""),
+                .define("PACKAGE_BUGREPORT", to: "\"https://github.com/libimobiledevice/libimobiledevice/issues\""),
+            ]
+        ),
+        
         // MARK: ---- iMobileDevice CLI ----
         
         .executableTarget(
             name: "iMobileDeviceCLI",
             dependencies: [
-                "iMobileDevice"
+                "iMobileDevice",
+                "BackupWrapper"
+            ],
+            path: "Sources/iMobileDeviceCLI",
+            sources: [
+                "main.swift"
             ],
             cSettings: [
                 .headerSearchPath("../libimobiledevice/dependencies/libimobiledevice"),

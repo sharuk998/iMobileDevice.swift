@@ -1,0 +1,5 @@
+module BackupWrapper {
+    header "backup_wrapper.h"
+    link "BackupWrapper"
+    export *
+}

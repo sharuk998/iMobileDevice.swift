@@ -1,6 +1,10 @@
 import Foundation
 import iMobileDevice
 
+// Directly call main() from idevicebackup2.c (renamed to idevicebackup2_main)
+@_silgen_name("idevicebackup2_main")
+func idevicebackup2_main(_ argc: Int32, _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
+
 // Helper function to convert C string to Swift String
 func cStringToString(_ cString: UnsafePointer<CChar>?) -> String? {
     guard let cString = cString else { return nil }
@@ -314,8 +318,14 @@ func pairWithDevice(udid: String? = nil) {
             print("  Device is password protected. Please unlock your device and try again.")
         case LOCKDOWN_E_USER_DENIED_PAIRING:
             print("  User denied pairing on the device.")
+        case LOCKDOWN_E_PAIRING_FAILED:
+            print("  Pairing failed. Try using the system tool:")
+            print("    $ idevicepair pair")
+            print("  Then tap 'Trust' on your device when prompted.")
         default:
             print("  Please check that the device is unlocked and you trust this computer.")
+            print("  You can also try using the system tool:")
+            print("    $ idevicepair pair")
         }
     }
     
@@ -330,33 +340,35 @@ func pairWithDevice(udid: String? = nil) {
 func createBackup(udid: String? = nil, backupPath: String = "./backup") {
     print("=== Creating iOS Backup ===\n")
     
-    var device: idevice_t? = nil
-    var deviceUDID: String
+    var deviceUDID: String = ""
     
-    // If no UDID provided, get the first device
-    if let udid = udid {
-        deviceUDID = udid
+    // Get device UDID
+    if let providedUDID = udid {
+        deviceUDID = providedUDID
     } else {
+        // Get first connected device
         var devices: UnsafeMutablePointer<idevice_info_t?>? = nil
         var count: Int32 = 0
         
         let result = idevice_get_device_list_extended(&devices, &count)
-        if result != IDEVICE_E_SUCCESS || count == 0 {
-            print("Error: No devices found")
+        
+        if result != IDEVICE_E_SUCCESS {
+            print("Error: Failed to get device list (error code: \(result))")
             return
         }
         
         guard let devicesArray = devices else {
-            print("Error: Could not get device list")
             return
         }
         
-        if count > 0, let firstDevice = devicesArray[0] {
-            deviceUDID = cStringToString(firstDevice.pointee.udid) ?? ""
-        } else {
-            print("Error: Could not get device UDID")
-            idevice_device_list_extended_free(devicesArray)
+        if count == 0 {
+            print("No devices found. Please connect an iOS device via USB.")
             return
+        }
+        
+        // Get UDID from first device
+        if let devicePtr = devicesArray[0] {
+            deviceUDID = cStringToString(devicePtr.pointee.udid) ?? ""
         }
         
         // Free the device list after extracting UDID
@@ -383,251 +395,44 @@ func createBackup(udid: String? = nil, backupPath: String = "./backup") {
         return
     }
     
-    // Create device connection
-    let options = idevice_options(rawValue: IDEVICE_LOOKUP_USBMUX.rawValue | IDEVICE_LOOKUP_NETWORK.rawValue)
-    let deviceResult = idevice_new_with_options(&device, deviceUDID, options)
-    if deviceResult != IDEVICE_E_SUCCESS {
-        print("Error: Failed to connect to device (error code: \(deviceResult))")
-        return
-    }
-    
-    // Create lockdown client
-    var lockdownClient: lockdownd_client_t? = nil
-    let lockdownResult = lockdownd_client_new_with_handshake(device, &lockdownClient, "iMobileDeviceCLI")
-    
-    if lockdownResult != LOCKDOWN_E_SUCCESS {
-        print("Error: Failed to create lockdown client (error code: \(lockdownResult))")
-        if lockdownResult == LOCKDOWN_E_PAIRING_FAILED {
-            print("Note: Device must be paired first. Run the pair function.")
-        }
-        idevice_free(device)
-        return
-    }
-    
-    // Start mobilebackup2 service
-    var service: lockdownd_service_descriptor_t? = nil
-    let serviceResult = lockdownd_start_service(lockdownClient, MOBILEBACKUP2_SERVICE_NAME, &service)
-    
-    if serviceResult != LOCKDOWN_E_SUCCESS {
-        print("Error: Failed to start mobilebackup2 service (error code: \(serviceResult))")
-        lockdownd_client_free(lockdownClient)
-        idevice_free(device)
-        return
-    }
-    
-    // Create mobilebackup2 client
-    var backupClient: mobilebackup2_client_t? = nil
-    let backupClientResult = mobilebackup2_client_new(device, service, &backupClient)
-    
-    if backupClientResult != MOBILEBACKUP2_E_SUCCESS {
-        print("Error: Failed to create mobilebackup2 client (error code: \(backupClientResult))")
-        lockdownd_client_free(lockdownClient)
-        idevice_free(device)
-        return
-    }
-    
-    print("Connected to mobilebackup2 service")
-    print("Starting backup process...\n")
-    
-    // Perform version exchange
-    var localVersions: [Double] = [2.0, 2.1]
-    var remoteVersion: Double = 0.0
-    let versionResult = mobilebackup2_version_exchange(backupClient, &localVersions, 2, &remoteVersion)
-    
-    if versionResult != MOBILEBACKUP2_E_SUCCESS {
-        print("Error: Version exchange failed (error code: \(versionResult))")
-        mobilebackup2_client_free(backupClient)
-        lockdownd_client_free(lockdownClient)
-        idevice_free(device)
-        return
-    }
-    
-    print("Protocol version: \(remoteVersion)\n")
-    
-    // Create backup options (for full backup, we can pass NULL or ForceFullBackup option)
-    // For a full backup, source_identifier should be the same as target_identifier
-    let backupOptions = plist_new_dict()
-    // Force full backup (optional - empty dict also works for full backup)
-    plist_dict_set_item(backupOptions, "ForceFullBackup", plist_new_bool(1))
-    
-    // Send backup request
-    // Parameters: client, "Backup", target_UDID, source_UDID, options
-    // For full backup: source_UDID = target_UDID (same device)
-    // For incremental: source_UDID = UDID of previous backup
-    let requestResult = mobilebackup2_send_request(backupClient, "Backup", deviceUDID, deviceUDID, backupOptions)
-    
-    if requestResult != MOBILEBACKUP2_E_SUCCESS {
-        print("Error: Failed to send backup request (error code: \(requestResult))")
-        if requestResult == MOBILEBACKUP2_E_REPLY_NOT_OK {
-            print("  Device refused the backup request. Device may need to be unlocked or paired.")
-        }
-        plist_free(backupOptions)
-        mobilebackup2_client_free(backupClient)
-        lockdownd_client_free(lockdownClient)
-        idevice_free(device)
-        return
-    }
-    
-    plist_free(backupOptions)
-    
-    print("Backup request sent. Waiting for device response...")
+    print("Starting backup process...")
+    print("⚠️  If your device asks for a passcode, please enter it on the device now.")
     print("This may take several minutes depending on device data size.\n")
     
-    // Receive and process backup messages
-    var backupComplete = false
-    var fileCount = 0
-    var lastProgressUpdate = Date()
-    let startTime = Date()
-    let maxBackupTime: TimeInterval = 300 // 5 minutes max
+    // Directly call main() from idevicebackup2.c with constructed argc/argv
+    // This is the simplest approach - just use the original code as-is!
+    let args = ["idevicebackup2", "-u", deviceUDID, "backup", "--full", backupPath]
     
-    while !backupComplete {
-        // Check for timeout
-        if Date().timeIntervalSince(startTime) > maxBackupTime {
-            print("\n⚠️  Backup timeout after 5 minutes")
-            print("   The backup protocol is not completing. This may be because:")
-            print("   1. The device is sending unexpected messages")
-            print("   2. File receiving is not implemented (files are not being written to disk)")
-            print("   3. The backup request parameters may be incorrect")
-            break
-        }
-        var msgPlist: plist_t? = nil
-        var dlMessage: UnsafeMutablePointer<CChar>? = nil
-        
-        let receiveResult = mobilebackup2_receive_message(backupClient, &msgPlist, &dlMessage)
-        
-        if receiveResult != MOBILEBACKUP2_E_SUCCESS {
-            if receiveResult == MOBILEBACKUP2_E_RECEIVE_TIMEOUT {
-                // Timeout is normal, continue waiting
-                // Show progress indicator every 5 seconds
-                let now = Date()
-                if now.timeIntervalSince(lastProgressUpdate) >= 5.0 {
-                    print("  Waiting for backup data... (processed \(fileCount) files so far)")
-                    lastProgressUpdate = now
-                }
-                Thread.sleep(forTimeInterval: 0.5)
-                continue
-            } else {
-                print("Error receiving backup message (error code: \(receiveResult))")
-                break
-            }
-        }
-        
-        guard let message = dlMessage else {
-            if let plist = msgPlist {
-                plist_free(plist)
-            }
-            continue
-        }
-        
-        let messageStr = cStringToString(message) ?? ""
-        
-        if messageStr == "DLMessageUploadFiles" {
-            // Device wants to upload files (backup) - this is what we want!
-            print("  Receiving backup files from device...")
-            
-            // Send status response to acknowledge we're ready to receive
-            let emptyDict = plist_new_dict()
-            let statusResult = mobilebackup2_send_status_response(backupClient, 0, nil, emptyDict)
-            plist_free(emptyDict)
-            
-            if statusResult != MOBILEBACKUP2_E_SUCCESS {
-                print("  Error sending status response: \(statusResult)")
-                free(message)
-                if let plist = msgPlist {
-                    plist_free(plist)
-                }
-                continue
-            }
-            
-            // Note: Full implementation would receive files here using mobilebackup2_receive_raw()
-            // and write them to disk. For now, we acknowledge and the device will continue.
-            print("  Acknowledged file upload request")
-            fileCount += 1
-            
-            if let plist = msgPlist {
-                plist_free(plist)
-            }
-            
-        } else if messageStr == "DLMessageDownloadFiles" {
-            // Device wants to download files (restore) - unexpected for backup
-            print("  ⚠️  Device requested file download (restore mode) during backup")
-            print("     This is the WRONG direction - device should upload files for backup")
-            print("     The backup request may not have been processed correctly by the device")
-            print("     Attempting to continue, but backup will likely not work...")
-            // Send empty status response to continue (though this won't help)
-            let emptyDict = plist_new_dict()
-            mobilebackup2_send_status_response(backupClient, 0, nil, emptyDict)
-            plist_free(emptyDict)
-            
-            // After receiving DownloadFiles, the device expects us to send files
-            // Since we're doing backup, we should break here
-            print("  Breaking backup loop - device is in restore mode, not backup mode")
-            backupComplete = true
-            
-        } else if messageStr == "DLMessageGetFreeDiskSpace" {
-            // Device wants to know available disk space
-            let fm = FileManager.default
-            if let stat = try? fm.attributesOfFileSystem(forPath: backupPath) {
-                if let freeSpace = stat[FileAttributeKey.systemFreeSize] as? UInt64 {
-                    let freeSpaceItem = plist_new_uint(freeSpace)
-                    mobilebackup2_send_status_response(backupClient, 0, nil, freeSpaceItem)
-                    plist_free(freeSpaceItem)
-                } else {
-                    let emptyDict = plist_new_dict()
-                    mobilebackup2_send_status_response(backupClient, 0, nil, emptyDict)
-                    plist_free(emptyDict)
-                }
-            } else {
-                let emptyDict = plist_new_dict()
-                mobilebackup2_send_status_response(backupClient, 0, nil, emptyDict)
-                plist_free(emptyDict)
-            }
-            
-        } else if messageStr.contains("BackupComplete") || messageStr.contains("DLMessageBackupComplete") {
-            backupComplete = true
-            print("\n✓ Backup completed successfully!")
-            
-        } else if messageStr.contains("ErrorDomain") || messageStr.contains("DLMessageError") {
-            backupComplete = true
-            print("\n✗ Backup failed: \(messageStr)")
-            
-        } else {
-            // Unknown message - send status response to continue
-            print("  Received: \(messageStr)")
-            let emptyDict = plist_new_dict()
-            mobilebackup2_send_status_response(backupClient, 0, nil, emptyDict)
-            plist_free(emptyDict)
-        }
-        
-        free(message)
-        
-        if let plist = msgPlist, messageStr != "DLMessageUploadFiles" {
-            // Free plist if we haven't already processed it
-            plist_free(plist)
+    // Allocate memory for argv array
+    let argc = Int32(args.count)
+    let argv = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(capacity: args.count + 1)
+    defer { argv.deallocate() }
+    
+    // Allocate memory for each argument string
+    var cStrings: [UnsafeMutablePointer<CChar>] = []
+    defer {
+        for cString in cStrings {
+            cString.deallocate()
         }
     }
     
-    if !backupComplete {
-        print("\n⚠️  Backup process did not complete normally.")
-        print("   The device may have sent unexpected messages or the backup was interrupted.")
+    for (index, arg) in args.enumerated() {
+        let cString = strdup(arg)
+        cStrings.append(cString!)
+        argv[index] = cString
     }
+    argv[args.count] = nil // NULL terminator
     
-    print("\nBackup process completed. Total operations: \(fileCount)")
-    print("Backup location: \(backupPath)")
-    print("\n⚠️  NOTE: This is a simplified backup implementation.")
-    print("   It handles the backup protocol messages but does NOT actually receive")
-    print("   and write files to disk. For a complete backup, you would need to:")
-    print("   1. Receive DLMessageUploadFiles")
-    print("   2. Parse the file list from the plist")
-    print("   3. Use mobilebackup2_receive_raw() to receive each file's data")
-    print("   4. Write files to disk in the backup directory")
-    print("   5. Send status responses after each file")
-    print("   6. Continue until DLMessageBackupComplete is received")
+    // Call the main function directly from idevicebackup2.c
+    let result = idevicebackup2_main(argc, argv)
     
-    // Cleanup
-    mobilebackup2_client_free(backupClient)
-    lockdownd_client_free(lockdownClient)
-    idevice_free(device)
+    if result == 0 {
+        print("\n✓ Backup completed successfully!")
+        print("  Backup location: \(backupPath)")
+    } else {
+        print("\n✗ Backup failed with exit code: \(result)")
+        print("  Please check device connection and pairing status.")
+    }
     
     print()
 }
