@@ -1,0 +1,40 @@
+{
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:iMobileDevice.swift}",
+            "name": "Debug libfragmentzip-cli",
+            "program": "${workspaceFolder:iMobileDevice.swift}/.build/debug/libfragmentzip-cli",
+            "preLaunchTask": "swift: Build Debug libfragmentzip-cli"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:iMobileDevice.swift}",
+            "name": "Release libfragmentzip-cli",
+            "program": "${workspaceFolder:iMobileDevice.swift}/.build/release/libfragmentzip-cli",
+            "preLaunchTask": "swift: Build Release libfragmentzip-cli"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:iMobileDevice.swift}",
+            "name": "Debug iMobileDeviceCLI",
+            "program": "${workspaceFolder:iMobileDevice.swift}/.build/debug/iMobileDeviceCLI",
+            "preLaunchTask": "swift: Build Debug iMobileDeviceCLI"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:iMobileDevice.swift}",
+            "name": "Release iMobileDeviceCLI",
+            "program": "${workspaceFolder:iMobileDevice.swift}/.build/release/iMobileDeviceCLI",
+            "preLaunchTask": "swift: Build Release iMobileDeviceCLI"
+        }
+    ]
+}

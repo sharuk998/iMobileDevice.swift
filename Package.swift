@@ -26,9 +26,6 @@ let package = Package(
     name: "iMobileDevice",
     defaultLocalization: "en",
     platforms: [
-        .iOS(.v12),
-        .tvOS(.v12),
-        .macCatalyst(.v13),
         .macOS(.v11),
     ],
 
@@ -173,6 +170,33 @@ let package = Package(
             ]
 		),
 
+        // MARK: ---- iMobileDevice CLI ----
+        
+        .executableTarget(
+            name: "iMobileDeviceCLI",
+            dependencies: [
+                "iMobileDevice"
+            ],
+            cSettings: [
+                .headerSearchPath("../libimobiledevice/dependencies/libimobiledevice"),
+                .headerSearchPath("../libimobiledevice/dependencies/libimobiledevice/include"),
+                .headerSearchPath("../libimobiledevice/dependencies/libimobiledevice/include/libimobiledevice"),
+                .headerSearchPath("../libimobiledevice/dependencies/libimobiledevice/common"),
+                .headerSearchPath("../libimobiledevice/dependencies/libimobiledevice-glue/include"),
+                .headerSearchPath("../libimobiledevice/dependencies/libusbmuxd/include"),
+                .define("HAVE_OPENSSL"),
+            ],
+            cxxSettings: [
+                .headerSearchPath("../libimobiledevice/dependencies/libimobiledevice"),
+                .headerSearchPath("../libimobiledevice/dependencies/libimobiledevice/include"),
+                .headerSearchPath("../libimobiledevice/dependencies/libimobiledevice/include/libimobiledevice"),
+                .headerSearchPath("../libimobiledevice/dependencies/libimobiledevice/common"),
+                .headerSearchPath("../libimobiledevice/dependencies/libimobiledevice-glue/include"),
+                .headerSearchPath("../libimobiledevice/dependencies/libusbmuxd/include"),
+                .define("HAVE_OPENSSL"),
+            ]
+        ),
+
         // MARK: ---- libfragmentzip (CLI) ----
         
 		.executableTarget(
@@ -251,8 +275,7 @@ let package = Package(
 			],
 			linkerSettings: [
 				.linkedLibrary("z"),
-				.linkedLibrary("curl", .when(platforms: [.macOS])),
-                .unsafeFlags(["-fprofile-instr-generate"])
+				.linkedLibrary("curl")
 			]
         ),
 
