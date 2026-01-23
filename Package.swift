@@ -345,6 +345,7 @@ let package = Package(
 				.define("HAVE_VASPRINTF"),
 				.define("HAVE_ASPRINTF"),
 				.define("PACKAGE_STRING", to: "\"SideServer 1.0\""),
+				.define("PACKAGE_VERSION", to: "\"1.0.0\""),
 				.define("HAVE_GETIFADDRS"),
 				.define("HAVE_STRNDUP"),
                 .define("HAVE_CONFIG_H"),
@@ -362,6 +363,7 @@ let package = Package(
 				.define("HAVE_VASPRINTF"),
 				.define("HAVE_ASPRINTF"),
 				.define("PACKAGE_STRING", to: "\"SideServer 1.0\""),
+				.define("PACKAGE_VERSION", to: "\"1.0.0\""),
 				.define("HAVE_GETIFADDRS"),
 				.define("HAVE_STRNDUP"),
                 .unsafeFlags(unsafe_flags_cxx, .when(configuration: .debug))
