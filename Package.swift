@@ -176,7 +176,11 @@ let package = Package(
         .target(
             name: "BackupWrapper",
             dependencies: [
-                "iMobileDevice"
+                "libimobiledevice",
+                "libimobiledevice-glue",
+                "libplist",
+                "libusbmuxd",
+                "OpenSSL"
             ],
             path: "Sources",
             sources: [
@@ -331,6 +335,9 @@ let package = Package(
 				"OpenSSL"
             ],
             path: "Sources/libimobiledevice/libimobiledevice/",
+            sources: [
+                "src"
+            ],
             publicHeadersPath: "include/",
 			cSettings: [
 				.headerSearchPath("include/"),

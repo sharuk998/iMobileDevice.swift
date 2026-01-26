@@ -1,460 +1,281 @@
 import Foundation
 import iMobileDevice
 
-// Directly call main() from idevicebackup2.c (renamed to idevicebackup2_main)
-@_silgen_name("idevicebackup2_main")
-func idevicebackup2_main(_ argc: Int32, _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
+// MARK: - CLI Tool
 
-// Helper function to convert C string to Swift String
-func cStringToString(_ cString: UnsafePointer<CChar>?) -> String? {
-    guard let cString = cString else { return nil }
-    return String(cString: cString)
-}
-
-// Helper function to print plist as XML
-func printPlist(_ plist: plist_t?) {
-    guard let plist = plist else {
-        print("  (null)")
-        return
+/// iMobileDevice CLI - Command-line tool for iOS device management
+/// Usage:
+///   imobiledevice list                    - List connected devices
+///   imobiledevice info [UDID]            - Get device information
+///   imobiledevice backup [UDID] [PATH]   - Create device backup
+struct iMobileDeviceCLI {
+    
+    // MARK: - Properties
+    
+    private let service: iOSDeviceService
+    
+    // MARK: - Initialization
+    
+    init() {
+        self.service = iOSDeviceService()
     }
     
-    var xmlString: UnsafeMutablePointer<CChar>? = nil
-    var length: UInt32 = 0
-    plist_to_xml(plist, &xmlString, &length)
+    // MARK: - Command Execution
     
-    if let xmlString = xmlString {
-        if let xml = String(cString: xmlString, encoding: .utf8) {
-            print("  \(xml)")
-        }
-        free(xmlString)
-    }
-}
-
-// MARK: - List Connected iOS Devices
-func listConnectedDevices() {
-    print("=== Listing Connected iOS Devices ===\n")
-    
-    var devices: UnsafeMutablePointer<idevice_info_t?>? = nil
-    var count: Int32 = 0
-    
-    let result = idevice_get_device_list_extended(&devices, &count)
-    
-    if result != IDEVICE_E_SUCCESS {
-        print("Error: Failed to get device list (error code: \(result))")
-        return
-    }
-    
-    guard let devicesArray = devices else {
-        return
-    }
-    
-    if count == 0 {
-        print("No devices found. Please connect an iOS device via USB.")
-        idevice_device_list_extended_free(devicesArray)
-        return
-    }
-    
-    print("Found \(count) device(s):\n")
-    
-    var i = 0
-    while i < Int(count), let devicePtr = devicesArray[i] {
-        let udid = cStringToString(devicePtr.pointee.udid) ?? "Unknown"
-        let connType = devicePtr.pointee.conn_type == CONNECTION_USBMUXD ? "USB" : "Network"
+    func run() {
+        let args = CommandLine.arguments
         
-        print("Device \(i + 1):")
-        print("  UDID: \(udid)")
-        print("  Connection: \(connType)")
-        print()
-        
-        i += 1
-    }
-    
-    idevice_device_list_extended_free(devicesArray)
-}
-
-// MARK: - Print Device Information
-func printDeviceInfo(udid: String? = nil) {
-    print("=== Device Information ===\n")
-    
-    var device: idevice_t? = nil
-    var deviceUDID: String
-    
-    // If no UDID provided, get the first device
-    if let udid = udid {
-        deviceUDID = udid
-    } else {
-        var devices: UnsafeMutablePointer<idevice_info_t?>? = nil
-        var count: Int32 = 0
-        
-        let result = idevice_get_device_list_extended(&devices, &count)
-        if result != IDEVICE_E_SUCCESS || count == 0 {
-            print("Error: No devices found")
-            return
+        guard args.count > 1 else {
+            printUsage()
+            exit(1)
         }
         
-        guard let devicesArray = devices else {
-            print("Error: Could not get device list")
-            return
-        }
+        let command = args[1]
         
-        if count > 0, let firstDevice = devicesArray[0] {
-            deviceUDID = cStringToString(firstDevice.pointee.udid) ?? ""
-        } else {
-            print("Error: Could not get device UDID")
-            idevice_device_list_extended_free(devicesArray)
-            return
-        }
-        
-        // Free the device list after extracting UDID
-        idevice_device_list_extended_free(devicesArray)
-        
-        if deviceUDID.isEmpty {
-            print("Error: Could not get device UDID")
-            return
-        }
-    }
-    
-    print("Connecting to device: \(deviceUDID)\n")
-    
-    // Create device connection
-    let options = idevice_options(rawValue: IDEVICE_LOOKUP_USBMUX.rawValue | IDEVICE_LOOKUP_NETWORK.rawValue)
-    let deviceResult = idevice_new_with_options(&device, deviceUDID, options)
-    if deviceResult != IDEVICE_E_SUCCESS {
-        print("Error: Failed to connect to device (error code: \(deviceResult))")
-        return
-    }
-    
-    // Create lockdown client
-    var lockdownClient: lockdownd_client_t? = nil
-    let lockdownResult = lockdownd_client_new_with_handshake(device, &lockdownClient, "iMobileDeviceCLI")
-    
-    if lockdownResult != LOCKDOWN_E_SUCCESS {
-        print("Error: Failed to create lockdown client (error code: \(lockdownResult))")
-        if lockdownResult == LOCKDOWN_E_PAIRING_FAILED {
-            print("Note: Device may need to be paired first. Try running the pair function.")
-        }
-        idevice_free(device)
-        return
-    }
-    
-    print("Device Information:\n")
-    
-    // Get device name
-    var deviceName: UnsafeMutablePointer<CChar>? = nil
-    if lockdownd_get_device_name(lockdownClient, &deviceName) == LOCKDOWN_E_SUCCESS {
-        if let name = cStringToString(deviceName) {
-            print("  Name: \(name)")
-        }
-        free(deviceName)
-    }
-    
-    // Get device info (all values)
-    var deviceInfo: plist_t? = nil
-    if lockdownd_get_value(lockdownClient, nil, nil, &deviceInfo) == LOCKDOWN_E_SUCCESS {
-        print("\n  Full Device Info:")
-        printPlist(deviceInfo)
-        plist_free(deviceInfo)
-    }
-    
-    // Get specific values
-    var value: plist_t? = nil
-    
-    if lockdownd_get_value(lockdownClient, nil, "ProductType", &value) == LOCKDOWN_E_SUCCESS {
-        var productType: UnsafeMutablePointer<CChar>? = nil
-        plist_get_string_val(value, &productType)
-        if let type = cStringToString(productType) {
-            print("\n  Product Type: \(type)")
-        }
-        plist_free(value)
-    }
-    
-    if lockdownd_get_value(lockdownClient, nil, "ProductVersion", &value) == LOCKDOWN_E_SUCCESS {
-        var version: UnsafeMutablePointer<CChar>? = nil
-        plist_get_string_val(value, &version)
-        if let ver = cStringToString(version) {
-            print("  iOS Version: \(ver)")
-        }
-        plist_free(value)
-    }
-    
-    if lockdownd_get_value(lockdownClient, nil, "SerialNumber", &value) == LOCKDOWN_E_SUCCESS {
-        var serial: UnsafeMutablePointer<CChar>? = nil
-        plist_get_string_val(value, &serial)
-        if let sn = cStringToString(serial) {
-            print("  Serial Number: \(sn)")
-        }
-        plist_free(value)
-    }
-    
-    if lockdownd_get_value(lockdownClient, nil, "UniqueDeviceID", &value) == LOCKDOWN_E_SUCCESS {
-        var udid: UnsafeMutablePointer<CChar>? = nil
-        plist_get_string_val(value, &udid)
-        if let id = cStringToString(udid) {
-            print("  UDID: \(id)")
-        }
-        plist_free(value)
-    }
-    
-    // Cleanup
-    lockdownd_client_free(lockdownClient)
-    idevice_free(device)
-    
-    print()
-}
-
-// MARK: - Pair with Device
-func pairWithDevice(udid: String? = nil) {
-    print("=== Pairing with Device ===\n")
-    
-    var device: idevice_t? = nil
-    var deviceUDID: String
-    
-    // If no UDID provided, get the first device
-    if let udid = udid {
-        deviceUDID = udid
-    } else {
-        var devices: UnsafeMutablePointer<idevice_info_t?>? = nil
-        var count: Int32 = 0
-        
-        let result = idevice_get_device_list_extended(&devices, &count)
-        if result != IDEVICE_E_SUCCESS || count == 0 {
-            print("Error: No devices found")
-            return
-        }
-        
-        guard let devicesArray = devices else {
-            print("Error: Could not get device list")
-            return
-        }
-        
-        if count > 0, let firstDevice = devicesArray[0] {
-            deviceUDID = cStringToString(firstDevice.pointee.udid) ?? ""
-        } else {
-            print("Error: Could not get device UDID")
-            idevice_device_list_extended_free(devicesArray)
-            return
-        }
-        
-        // Free the device list after extracting UDID
-        idevice_device_list_extended_free(devicesArray)
-        
-        if deviceUDID.isEmpty {
-            print("Error: Could not get device UDID")
-            return
-        }
-    }
-    
-    print("Pairing with device: \(deviceUDID)\n")
-    
-    // Create device connection
-    let options = idevice_options(rawValue: IDEVICE_LOOKUP_USBMUX.rawValue | IDEVICE_LOOKUP_NETWORK.rawValue)
-    let deviceResult = idevice_new_with_options(&device, deviceUDID, options)
-    if deviceResult != IDEVICE_E_SUCCESS {
-        print("Error: Failed to connect to device (error code: \(deviceResult))")
-        return
-    }
-    
-    // Create lockdown client (without handshake first)
-    var lockdownClient: lockdownd_client_t? = nil
-    let clientResult = lockdownd_client_new(device, &lockdownClient, "iMobileDeviceCLI")
-    
-    if clientResult != LOCKDOWN_E_SUCCESS {
-        print("Error: Failed to create lockdown client (error code: \(clientResult))")
-        idevice_free(device)
-        return
-    }
-    
-    // Check if already paired
-    let validateResult = lockdownd_validate_pair(lockdownClient, nil)
-    if validateResult == LOCKDOWN_E_SUCCESS {
-        print("Device is already paired!")
-        lockdownd_client_free(lockdownClient)
-        idevice_free(device)
-        return
-    }
-    
-    // Attempt to pair
-    print("Attempting to pair...")
-    print("Note: You may need to trust this computer on your iOS device.")
-    print("Please check your device and tap 'Trust' if prompted.\n")
-    
-    var pairResult = lockdownd_pair(lockdownClient, nil)
-    
-    // If pairing dialog is pending, wait for user response
-    if pairResult == LOCKDOWN_E_PAIRING_DIALOG_RESPONSE_PENDING {
-        print("Waiting for user to respond on device...")
-        print("(This may take up to 30 seconds)")
-        
-        // Poll for pairing completion
-        var attempts = 0
-        let maxAttempts = 30 // 30 seconds
-        
-        while attempts < maxAttempts {
-            Thread.sleep(forTimeInterval: 1.0)
-            pairResult = lockdownd_validate_pair(lockdownClient, nil)
-            
-            if pairResult == LOCKDOWN_E_SUCCESS {
-                print("\n✓ Pairing successful!")
-                break
+        do {
+            switch command {
+            case "list", "ls":
+                try listDevices()
+                
+            case "info":
+                let udid = args.count > 2 ? args[2] : nil
+                try showDeviceInfo(udid: udid)
+                
+            case "raw", "plist":
+                let udid = args.count > 2 ? args[2] : nil
+                try showRawPlist(udid: udid)
+                
+            case "backup":
+                let udid = args.count > 2 && !args[2].hasPrefix("-") ? args[2] : nil
+                let backupPath = getBackupPath(from: args)
+                try createBackup(udid: udid, backupPath: backupPath)
+                
+            case "help", "--help", "-h":
+                printUsage()
+                exit(0)
+                
+            case "version", "--version", "-v":
+                printVersion()
+                exit(0)
+                
+            default:
+                print("Error: Unknown command '\(command)'")
+                printUsage()
+                exit(1)
             }
-            
-            attempts += 1
-            if attempts % 5 == 0 {
-                print(".", terminator: "")
-                fflush(stdout)
-            }
-        }
-        
-        if pairResult != LOCKDOWN_E_SUCCESS {
-            print("\n✗ Pairing timed out or failed")
-        }
-    } else if pairResult == LOCKDOWN_E_SUCCESS {
-        print("✓ Pairing successful!")
-    } else {
-        print("✗ Pairing failed (error code: \(pairResult))")
-        
-        switch pairResult {
-        case LOCKDOWN_E_PASSWORD_PROTECTED:
-            print("  Device is password protected. Please unlock your device and try again.")
-        case LOCKDOWN_E_USER_DENIED_PAIRING:
-            print("  User denied pairing on the device.")
-        case LOCKDOWN_E_PAIRING_FAILED:
-            print("  Pairing failed. Try using the system tool:")
-            print("    $ idevicepair pair")
-            print("  Then tap 'Trust' on your device when prompted.")
-        default:
-            print("  Please check that the device is unlocked and you trust this computer.")
-            print("  You can also try using the system tool:")
-            print("    $ idevicepair pair")
+        } catch {
+            printError(error)
+            exit(1)
         }
     }
     
-    // Cleanup
-    lockdownd_client_free(lockdownClient)
-    idevice_free(device)
+    // MARK: - Commands
     
-    print()
-}
-
-// MARK: - Create iOS Backup
-func createBackup(udid: String? = nil, backupPath: String = "./backup") {
-    print("=== Creating iOS Backup ===\n")
-    
-    var deviceUDID: String = ""
-    
-    // Get device UDID
-    if let providedUDID = udid {
-        deviceUDID = providedUDID
-    } else {
-        // Get first connected device
-        var devices: UnsafeMutablePointer<idevice_info_t?>? = nil
-        var count: Int32 = 0
+    private func listDevices() throws {
+        let devices = try service.listConnectedDevices()
         
-        let result = idevice_get_device_list_extended(&devices, &count)
-        
-        if result != IDEVICE_E_SUCCESS {
-            print("Error: Failed to get device list (error code: \(result))")
-            return
-        }
-        
-        guard let devicesArray = devices else {
-            return
-        }
-        
-        if count == 0 {
+        if devices.isEmpty {
             print("No devices found. Please connect an iOS device via USB.")
             return
         }
         
-        // Get UDID from first device
-        if let devicePtr = devicesArray[0] {
-            deviceUDID = cStringToString(devicePtr.pointee.udid) ?? ""
+        print("Found \(devices.count) device(s):\n")
+        
+        for (index, device) in devices.enumerated() {
+            print("Device \(index + 1):")
+            print("  UDID: \(device.udid)")
+            print("  Connection: \(device.connectionType.displayName)")
+            if let name = device.name {
+                print("  Name: \(name)")
+            }
+            if let productType = device.productType {
+                print("  Product Type: \(productType)")
+            }
+            if let iosVersion = device.iosVersion {
+                print("  iOS Version: \(iosVersion)")
+            }
+            print()
+        }
+    }
+    
+    private func showDeviceInfo(udid: String?) throws {
+        let metadata = try service.getDeviceMetadata(udid: udid)
+        let device = metadata.deviceInfo
+        
+        print("=== Device Information ===\n")
+        print("UDID: \(device.udid)")
+        print("Connection: \(device.connectionType.displayName)")
+        
+        if let name = device.name {
+            print("Name: \(name)")
         }
         
-        // Free the device list after extracting UDID
-        idevice_device_list_extended_free(devicesArray)
+        if let productType = device.productType {
+            print("Product Type: \(productType)")
+        }
         
-        if deviceUDID.isEmpty {
-            print("Error: Could not get device UDID")
-            return
+        if let iosVersion = device.iosVersion {
+            print("iOS Version: \(iosVersion)")
         }
-    }
-    
-    print("Creating backup for device: \(deviceUDID)")
-    print("Backup path: \(backupPath)\n")
-    
-    // Create backup directory
-    let fileManager = FileManager.default
-    let backupURL = URL(fileURLWithPath: backupPath)
-    
-    do {
-        try fileManager.createDirectory(at: backupURL, withIntermediateDirectories: true, attributes: nil)
-        print("✓ Backup directory created: \(backupPath)\n")
-    } catch {
-        print("Error: Failed to create backup directory: \(error)")
-        return
-    }
-    
-    print("Starting backup process...")
-    print("⚠️  If your device asks for a passcode, please enter it on the device now.")
-    print("This may take several minutes depending on device data size.\n")
-    
-    // Directly call main() from idevicebackup2.c with constructed argc/argv
-    // This is the simplest approach - just use the original code as-is!
-    let args = ["idevicebackup2", "-u", deviceUDID, "backup", "--full", backupPath]
-    
-    // Allocate memory for argv array
-    let argc = Int32(args.count)
-    let argv = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(capacity: args.count + 1)
-    defer { argv.deallocate() }
-    
-    // Allocate memory for each argument string
-    var cStrings: [UnsafeMutablePointer<CChar>] = []
-    defer {
-        for cString in cStrings {
-            cString.deallocate()
+        
+        if let serialNumber = device.serialNumber {
+            print("Serial Number: \(serialNumber)")
         }
+        
+        print("\n--- Raw Device Info (Plist XML) ---")
+        print(metadata.rawPlistXML)
+        print()
     }
     
-    for (index, arg) in args.enumerated() {
-        let cString = strdup(arg)
-        cStrings.append(cString!)
-        argv[index] = cString
+    private func showRawPlist(udid: String?) throws {
+        let metadata = try service.getDeviceMetadata(udid: udid)
+        // Print only the raw plist XML, nothing else
+        print(metadata.rawPlistXML)
     }
-    argv[args.count] = nil // NULL terminator
     
-    // Call the main function directly from idevicebackup2.c
-    let result = idevicebackup2_main(argc, argv)
-    
-    if result == 0 {
+    private func createBackup(udid: String?, backupPath: String) throws {
+        print("=== Creating iOS Backup ===\n")
+        
+        // Validate device exists
+        let devices = try service.listConnectedDevices()
+        let targetUDID: String
+        
+        if let providedUDID = udid {
+            guard devices.contains(where: { $0.udid == providedUDID }) else {
+                throw DeviceServiceError.deviceNotFound(udid: providedUDID)
+            }
+            targetUDID = providedUDID
+        } else {
+            guard let firstDevice = devices.first else {
+                throw DeviceServiceError.noDevicesFound
+            }
+            targetUDID = firstDevice.udid
+        }
+        
+        print("Device: \(targetUDID)")
+        print("Backup path: \(backupPath)\n")
+        
+        print("Starting backup process...")
+        print("⚠️  If your device asks for a passcode, please enter it on the device now.")
+        print("This may take several minutes depending on device data size.\n")
+        
+        let fileCount = try service.createBackup(
+            udid: targetUDID,
+            backupPath: backupPath,
+            password: nil,
+            forceFull: true
+        )
+        
         print("\n✓ Backup completed successfully!")
         print("  Backup location: \(backupPath)")
-    } else {
-        print("\n✗ Backup failed with exit code: \(result)")
-        print("  Please check device connection and pairing status.")
+        print("  Files backed up: \(fileCount)")
+        print()
     }
     
-    print()
+    // MARK: - Helper Methods
+    
+    private func getBackupPath(from args: [String]) -> String {
+        // Look for -o or --output flag
+        if let outputIndex = args.firstIndex(where: { $0 == "-o" || $0 == "--output" }),
+           outputIndex + 1 < args.count {
+            return args[outputIndex + 1]
+        }
+        
+        // If UDID is provided, backup path might be the third argument
+        // Otherwise, use default
+        if args.count > 2 && !args[2].hasPrefix("-") {
+            // Check if it's a path (contains / or .)
+            if args[2].contains("/") || args[2].hasPrefix(".") {
+                return args[2]
+            }
+            // If UDID was provided, backup path might be the 4th argument
+            if args.count > 3 && !args[3].hasPrefix("-") {
+                return args[3]
+            }
+        }
+        
+        // Default backup path
+        return "./backup"
+    }
+    
+    private func printUsage() {
+        print("""
+        iMobileDevice CLI - iOS Device Management Tool
+        
+        Usage:
+          imobiledevice <command> [options]
+        
+        Commands:
+          list, ls                    List all connected iOS devices
+          info [UDID]                 Get detailed information about a device
+          raw, plist [UDID]           Print only raw plist XML for a device
+          backup [UDID] [PATH]        Create a backup of a device
+        
+        Options:
+          -o, --output PATH           Specify backup output path (for backup command)
+          -h, --help                 Show this help message
+          -v, --version              Show version information
+        
+        Examples:
+          imobiledevice list
+          imobiledevice info
+          imobiledevice info 00008030-001A1D1234567890
+          imobiledevice raw
+          imobiledevice raw 00008030-001A1D1234567890
+          imobiledevice backup
+          imobiledevice backup 00008030-001A1D1234567890 ./my-backup
+          imobiledevice backup -o ./my-backup
+        
+        """)
+    }
+    
+    private func printVersion() {
+        print("iMobileDevice CLI 1.0.0")
+    }
+    
+    private func printError(_ error: Error) {
+        if let deviceError = error as? DeviceServiceError {
+            switch deviceError {
+            case .noDevicesFound:
+                print("Error: No devices found. Please connect an iOS device via USB.")
+            case .deviceNotFound(let udid):
+                print("Error: Device with UDID '\(udid)' not found.")
+            case .connectionFailed(let udid, let code):
+                print("Error: Failed to connect to device '\(udid)' (error code: \(code))")
+            case .informationRetrievalFailed(let udid, let code):
+                print("Error: Failed to retrieve information for device '\(udid)' (error code: \(code))")
+            case .pairingFailed(let udid, let code):
+                print("Error: Failed to pair with device '\(udid)' (error code: \(code))")
+                print("  Please ensure the device is unlocked and you trust this computer.")
+            case .backupFailed(let udid, let code, let message):
+                print("Error: Backup failed for device '\(udid)' (code: \(code)): \(message ?? "Unknown error")")
+            case .invalidBackupDirectory(let path):
+                print("Error: Invalid backup directory: \(path)")
+            case .unknown(let message):
+                print("Error: \(message)")
+            }
+        } else {
+            print("Error: \(error.localizedDescription)")
+        }
+    }
 }
 
-// MARK: - Main
-func main() {
-    print("iMobileDevice CLI Tool\n")
-    print("======================\n")
-    
-    // List connected devices
-    listConnectedDevices()
-    
-    // Print device information
-    printDeviceInfo()
-    
-    // Pair with device
-    pairWithDevice()
-    
-    // Create backup
-    createBackup()
-    
-    print("All operations completed!")
+// MARK: - DeviceConnectionType Extension
+
+extension DeviceConnectionType {
+    var displayName: String {
+        switch self {
+        case .usb:
+            return "USB"
+        case .network:
+            return "Network"
+        case .unknown:
+            return "Unknown"
+        }
+    }
 }
 
-main()
+// MARK: - Main Entry Point
+
+let cli = iMobileDeviceCLI()
+cli.run()
