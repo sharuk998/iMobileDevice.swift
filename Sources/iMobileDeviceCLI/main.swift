@@ -35,7 +35,12 @@ struct iMobileDeviceCLI {
         do {
             switch command {
             case "list", "ls":
-                try listDevices()
+                // Check if --plist flag is provided
+                if args.contains("--plist") || args.contains("-p") {
+                    try listDevicesAsPlist()
+                } else {
+                    try listDevices()
+                }
                 
             case "info":
                 let udid = args.count > 2 ? args[2] : nil
@@ -44,6 +49,9 @@ struct iMobileDeviceCLI {
             case "raw", "plist":
                 let udid = args.count > 2 ? args[2] : nil
                 try showRawPlist(udid: udid)
+                
+            case "list-plist", "list-plists":
+                try listDevicesAsPlist()
                 
             case "backup":
                 let udid = args.count > 2 && !args[2].hasPrefix("-") ? args[2] : nil
@@ -133,6 +141,12 @@ struct iMobileDeviceCLI {
         print(metadata.rawPlistXML)
     }
     
+    private func listDevicesAsPlist() throws {
+        let plistXML = try service.listDevicesAsPlist()
+        // Print only the plist XML, nothing else
+        print(plistXML)
+    }
+    
     private func createBackup(udid: String?, backupPath: String) throws {
         print("=== Creating iOS Backup ===\n")
         
@@ -207,6 +221,8 @@ struct iMobileDeviceCLI {
         
         Commands:
           list, ls                    List all connected iOS devices
+          list --plist, list -p       List all devices as plist array (XML)
+          list-plist                  List all devices as plist array (XML)
           info [UDID]                 Get detailed information about a device
           raw, plist [UDID]           Print only raw plist XML for a device
           backup [UDID] [PATH]        Create a backup of a device
@@ -218,6 +234,8 @@ struct iMobileDeviceCLI {
         
         Examples:
           imobiledevice list
+          imobiledevice list --plist
+          imobiledevice list-plist
           imobiledevice info
           imobiledevice info 00008030-001A1D1234567890
           imobiledevice raw
