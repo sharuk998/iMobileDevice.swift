@@ -1,0 +1,5 @@
+module libimobiledevice {
+  header "libimobiledevice_swift.h"
+  export *
+}
+

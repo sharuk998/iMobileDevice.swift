@@ -1,0 +1,249 @@
+import Foundation
+
+/// Service class for interacting with iOS devices
+public class iOSDeviceService: iOSDeviceServiceType {
+    
+    // MARK: - Initialization
+    
+    public init() {}
+    
+    // MARK: - iOSDeviceServiceType Implementation
+    
+    public func listConnectedDevices() throws -> [iOSDeviceMetadata] {
+        var devices: UnsafeMutablePointer<idevice_info_t?>? = nil
+        var count: Int32 = 0
+        
+        let result = idevice_get_device_list_extended(&devices, &count)
+        
+        guard result == IDEVICE_E_SUCCESS else {
+            throw iOSDeviceError.unknown(message: "Failed to get device list. Error code: \(result)")
+        }
+        
+        guard let devicesArray = devices else {
+            throw iOSDeviceError.noDevicesFound
+        }
+        
+        var deviceList: [iOSDeviceMetadata] = []
+        
+        for i in 0..<Int(count) {
+            guard let deviceInfo = devicesArray[i] else { continue }
+            
+            let udid = cStringToString(deviceInfo.pointee.udid) ?? ""
+            guard !udid.isEmpty else { continue }
+            
+            let connectionType: DeviceConnectionType
+            switch deviceInfo.pointee.conn_type {
+            case CONNECTION_USBMUXD:
+                connectionType = .usb
+            case CONNECTION_NETWORK:
+                connectionType = .network
+            default:
+                connectionType = .unknown
+            }
+            
+            // Try to enrich basic device info using lockdown, but don't fail the whole list if it fails
+            var name: String? = nil
+            var deviceClass: String? = nil
+            var productType: String? = nil
+            var iosVersion: String? = nil
+            var serialNumber: String? = nil
+            var phoneNumber: String? = nil
+            var rawPlistXML: String = ""
+            var rawPlistDict: [String: Any]? = nil
+            
+            var ideviceHandle: idevice_t? = nil
+            if idevice_new(&ideviceHandle, udid) == IDEVICE_E_SUCCESS, let dev = ideviceHandle {
+                defer { idevice_free(dev) }
+                
+                var lockdownClient: lockdownd_client_t? = nil
+                if lockdownd_client_new_with_handshake(dev, &lockdownClient, "iMobileDevice") == LOCKDOWN_E_SUCCESS,
+                   let lockdown = lockdownClient {
+                    defer { lockdownd_client_free(lockdown) }
+                    
+                    // Fetch full device plist
+                    if let fullPlist = getLockdownPlist(lockdown, domain: nil, key: nil) {
+                        rawPlistXML = fullPlist.rawXML
+                        rawPlistDict = fullPlist.dictionary
+                    }
+                    
+                    name = getLockdownString(lockdown, key: "DeviceName")
+                    deviceClass = getLockdownString(lockdown, key: "DeviceClass")
+                    productType = getLockdownString(lockdown, key: "ProductType")
+                    iosVersion = getLockdownString(lockdown, key: "ProductVersion")
+                    serialNumber = getLockdownString(lockdown, key: "SerialNumber")
+                    phoneNumber = getLockdownString(lockdown, key: "PhoneNumber")
+                }
+            }
+            
+            let info = iOSDeviceInfo(
+                id: udid,
+                connectionType: connectionType,
+                name: name,
+                deviceClass: deviceClass,
+                productType: productType,
+                iosVersion: iosVersion,
+                serialNumber: serialNumber,
+                phoneNumber: phoneNumber
+            )
+            
+            let metadata = iOSDeviceMetadata(
+                deviceInfo: info,
+                rawPlistXML: rawPlistXML,
+                rawPlist: rawPlistDict
+            )
+            
+            deviceList.append(metadata)
+        }
+        
+        // Free the device list
+        idevice_device_list_extended_free(devicesArray)
+        
+        if deviceList.isEmpty {
+            throw iOSDeviceError.noDevicesFound
+        }
+        
+        return deviceList
+    }
+    
+    public func getDeviceMetadata(udid: String?) throws -> iOSDeviceMetadata {
+        // Get device UDID
+        let deviceUDID: String
+        if let providedUDID = udid {
+            deviceUDID = providedUDID
+        } else {
+            // Get first connected device
+            let devices = try listConnectedDevices()
+            guard let firstDevice = devices.first else {
+                throw iOSDeviceError.noDevicesFound
+            }
+            deviceUDID = firstDevice.deviceInfo.id
+        }
+        
+        // Connect to device
+        var device: idevice_t? = nil
+        let deviceResult = idevice_new(&device, deviceUDID)
+        
+        guard deviceResult == IDEVICE_E_SUCCESS, let deviceHandle = device else {
+            throw iOSDeviceError.connectionFailed(udid: deviceUDID, code: Int32(deviceResult.rawValue))
+        }
+        defer { idevice_free(deviceHandle) }
+        
+        // Create lockdown client
+        var lockdownClient: lockdownd_client_t? = nil
+        let clientResult = lockdownd_client_new_with_handshake(deviceHandle, &lockdownClient, "iMobileDevice")
+        
+        guard clientResult == LOCKDOWN_E_SUCCESS, let lockdown = lockdownClient else {
+            throw iOSDeviceError.connectionFailed(udid: deviceUDID, code: Int32(clientResult.rawValue))
+        }
+        defer { lockdownd_client_free(lockdown) }
+        
+        // Get full device information plist (XML + parsed dict)
+        guard let fullPlist = getLockdownPlist(lockdown, domain: nil, key: nil) else {
+            throw iOSDeviceError.informationRetrievalFailed(udid: deviceUDID, code: -1)
+        }
+        
+        let rawPlistXML = fullPlist.rawXML
+        let dict = fullPlist.dictionary
+        
+        // Extract structured information using lockdown helpers
+        var deviceName: String? = nil
+        var productType: String? = nil
+        var iosVersion: String? = nil
+        var serialNumber: String? = nil
+        var deviceClass: String? = nil
+        var phoneNumber: String? = nil
+        
+        deviceName = getLockdownString(lockdown, key: "DeviceName")
+        productType = getLockdownString(lockdown, key: "ProductType")
+        iosVersion = getLockdownString(lockdown, key: "ProductVersion")
+        serialNumber = getLockdownString(lockdown, key: "SerialNumber")
+        deviceClass = getLockdownString(lockdown, key: "DeviceClass")
+        phoneNumber = getLockdownString(lockdown, key: "PhoneNumber")
+        
+        let deviceInfo = iOSDeviceInfo(
+            id: deviceUDID,
+            connectionType: .usb,
+            name: deviceName,
+            deviceClass: deviceClass,
+            productType: productType,
+            iosVersion: iosVersion,
+            serialNumber: serialNumber,
+            phoneNumber: phoneNumber
+        )
+        
+        return iOSDeviceMetadata(
+            deviceInfo: deviceInfo,
+            rawPlistXML: rawPlistXML,
+            rawPlist: dict
+        )
+    }
+    
+    // MARK: - Helper Methods
+    
+    private func cStringToString(
+        _ cString: UnsafePointer<CChar>?
+    ) -> String? {
+        guard let cString = cString else { return nil }
+        return String(cString: cString)
+    }
+    
+    // Convenience helper to fetch a string value from lockdown without throwing.
+    private func getLockdownString(
+        _ client: lockdownd_client_t,
+        key: String
+    ) -> String? {
+        var node: plist_t? = nil
+        
+        let result = key.withCString { keyC in
+            lockdownd_get_value(client, nil, keyC, &node)
+        }
+        
+        guard result == LOCKDOWN_E_SUCCESS, let valueNode = node else {
+            return nil
+        }
+        defer { plist_free(valueNode) }
+        
+        guard plist_get_node_type(valueNode) == PLIST_STRING else {
+            return nil
+        }
+        
+        var stringValue: UnsafeMutablePointer<CChar>? = nil
+        plist_get_string_val(valueNode, &stringValue)
+        
+        guard let str = stringValue else {
+            return nil
+        }
+        defer { free(str) }
+        
+        return String(cString: str)
+    }
+    
+    /// Convenience helper to fetch the full lockdown plist (XML + parsed dict) without throwing.
+    private func getLockdownPlist(
+        _ client: lockdownd_client_t,
+        domain: UnsafePointer<CChar>?,
+        key: UnsafePointer<CChar>?
+    ) -> (rawXML: String, dictionary: [String: Any]?)? {
+        var plistNode: plist_t? = nil
+        let result = lockdownd_get_value(client, domain, key, &plistNode)
+        
+        guard result == LOCKDOWN_E_SUCCESS, let plist = plistNode else {
+            return nil
+        }
+        defer { plist_free(plist) }
+        
+        var xmlPtr: UnsafeMutablePointer<CChar>? = nil
+        var length: UInt32 = 0
+        plist_to_xml(plist, &xmlPtr, &length)
+        guard let xml = xmlPtr else {
+            return nil
+        }
+        defer { free(xml) }
+        
+        let rawXML = String(cString: xml)
+        let data = rawXML.data(using: .utf8)
+        let dict = (try? PropertyListSerialization.propertyList(from: data ?? Data(), format: nil)) as? [String: Any]
+        
+        return (rawXML, dict)
+    }
+}
