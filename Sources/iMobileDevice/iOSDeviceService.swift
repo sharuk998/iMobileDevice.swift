@@ -9,18 +9,18 @@ public class iOSDeviceService: iOSDeviceServiceType {
     
     // MARK: - iOSDeviceServiceType Implementation
     
-    public func listConnectedDevices() throws -> [iOSDeviceMetadata] {
+    public func listConnectedDevices() async throws -> [iOSDeviceMetadata] {
         var devices: UnsafeMutablePointer<idevice_info_t?>? = nil
         var count: Int32 = 0
         
         let result = idevice_get_device_list_extended(&devices, &count)
         
         guard result == IDEVICE_E_SUCCESS else {
-            throw iOSDeviceError.unknown(message: "Failed to get device list. Error code: \(result)")
+            throw iOSDeviceServiceError.unknown(message: "Failed to get device list. Error code: \(result)")
         }
         
         guard let devicesArray = devices else {
-            throw iOSDeviceError.noDevicesFound
+            throw iOSDeviceServiceError.noDevicesFound
         }
         
         var deviceList: [iOSDeviceMetadata] = []
@@ -99,32 +99,24 @@ public class iOSDeviceService: iOSDeviceServiceType {
         idevice_device_list_extended_free(devicesArray)
         
         if deviceList.isEmpty {
-            throw iOSDeviceError.noDevicesFound
+            throw iOSDeviceServiceError.noDevicesFound
         }
         
         return deviceList
     }
     
-    public func getDeviceMetadata(udid: String?) throws -> iOSDeviceMetadata {
+    public func getDeviceMetadata(udid: String?) async throws -> iOSDeviceMetadata {
         // Get device UDID
-        let deviceUDID: String
-        if let providedUDID = udid {
-            deviceUDID = providedUDID
-        } else {
-            // Get first connected device
-            let devices = try listConnectedDevices()
-            guard let firstDevice = devices.first else {
-                throw iOSDeviceError.noDevicesFound
-            }
-            deviceUDID = firstDevice.deviceInfo.id
+        guard let deviceUDID = udid else {
+            throw iOSDeviceServiceError.invalidDeviceId
         }
-        
+
         // Connect to device
         var device: idevice_t? = nil
         let deviceResult = idevice_new(&device, deviceUDID)
         
         guard deviceResult == IDEVICE_E_SUCCESS, let deviceHandle = device else {
-            throw iOSDeviceError.connectionFailed(udid: deviceUDID, code: Int32(deviceResult.rawValue))
+            throw iOSDeviceServiceError.connectionFailed(udid: deviceUDID, code: Int32(deviceResult.rawValue))
         }
         defer { idevice_free(deviceHandle) }
         
@@ -133,13 +125,13 @@ public class iOSDeviceService: iOSDeviceServiceType {
         let clientResult = lockdownd_client_new_with_handshake(deviceHandle, &lockdownClient, "iMobileDevice")
         
         guard clientResult == LOCKDOWN_E_SUCCESS, let lockdown = lockdownClient else {
-            throw iOSDeviceError.connectionFailed(udid: deviceUDID, code: Int32(clientResult.rawValue))
+            throw iOSDeviceServiceError.connectionFailed(udid: deviceUDID, code: Int32(clientResult.rawValue))
         }
         defer { lockdownd_client_free(lockdown) }
         
         // Get full device information plist (XML + parsed dict)
         guard let fullPlist = getLockdownPlist(lockdown, domain: nil, key: nil) else {
-            throw iOSDeviceError.informationRetrievalFailed(udid: deviceUDID, code: -1)
+            throw iOSDeviceServiceError.informationRetrievalFailed(udid: deviceUDID, code: -1)
         }
         
         let rawPlistXML = fullPlist.rawXML
@@ -177,8 +169,77 @@ public class iOSDeviceService: iOSDeviceServiceType {
             rawPlist: dict
         )
     }
-    
-    // MARK: - Helper Methods
+
+    public func createBackup(
+        udid: String?,
+        backupPath: String,
+        forceFull: Bool
+    ) async throws -> Int {
+        // Validate backup directory
+        let fileManager = FileManager.default
+        let backupURL = URL(fileURLWithPath: backupPath)
+        
+        // Create backup directory if it doesn't exist
+        if !fileManager.fileExists(atPath: backupPath) {
+            do {
+                try fileManager.createDirectory(at: backupURL, withIntermediateDirectories: true, attributes: nil)
+            } catch {
+                throw iOSDeviceServiceError.unknown(message: "Failed to create backup directory. Error: \(error)")
+            }
+        }
+        
+        // Get device UDID
+        guard let deviceUDID = udid else {
+            throw iOSDeviceServiceError.invalidDeviceId
+        }
+        
+        // Construct command-line arguments for idevicebackup2_main
+        var args = ["idevicebackup2", "-u", deviceUDID, "backup"]
+        
+        if forceFull {
+            args.append("--full")
+        }
+                
+        args.append(backupPath)
+        
+        // Allocate memory for argv array
+        let argc = Int32(args.count)
+        let argv = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(capacity: args.count + 1)
+        defer { argv.deallocate() }
+        
+        // Allocate memory for each argument string
+        var cStrings: [UnsafeMutablePointer<CChar>] = []
+        defer {
+            for cString in cStrings {
+                cString.deallocate()
+            }
+        }
+        
+        for (index, arg) in args.enumerated() {
+            let cString = strdup(arg)
+            guard let cString = cString else {
+                throw iOSDeviceServiceError.backupFailed(errorCode: -1, message: "Failed to allocate memory for argument")
+            }
+            cStrings.append(cString)
+            argv[index] = cString
+        }
+        argv[args.count] = nil // NULL terminator
+        
+        // Call the main function directly from idevicebackup2.c
+        let result = idevicebackup2_main(argc, argv)
+        
+        if result == 0 {
+            // Success - count files in backup directory
+            let fileCount = countFilesInBackup(backupPath: backupPath, udid: deviceUDID)
+            return fileCount
+        } else {
+            throw iOSDeviceServiceError.backupFailed(errorCode: Int(result), message: "Backup process failed with code \(result)")
+        }
+    }
+}
+
+// MARK: - Helper Methods
+extension iOSDeviceService {
     
     private func cStringToString(
         _ cString: UnsafePointer<CChar>?
@@ -246,4 +307,26 @@ public class iOSDeviceService: iOSDeviceServiceType {
         
         return (rawXML, dict)
     }
+
+    private func countFilesInBackup(backupPath: String, udid: String) -> Int {
+        let fileManager = FileManager.default
+        let deviceBackupPath = (backupPath as NSString).appendingPathComponent(udid)
+        
+        guard let enumerator = fileManager.enumerator(atPath: deviceBackupPath) else {
+            return 0
+        }
+        
+        var count = 0
+        while enumerator.nextObject() != nil {
+            count += 1
+        }
+        
+        return count
+    }
 }
+
+// MARK: - C Function Declaration
+
+/// Direct call to main() from idevicebackup2.c (renamed to idevicebackup2_main)
+@_silgen_name("idevicebackup2_main")
+private func idevicebackup2_main(_ argc: Int32, _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32

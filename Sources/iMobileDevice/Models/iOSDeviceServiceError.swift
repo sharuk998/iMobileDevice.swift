@@ -1,5 +1,5 @@
 //
-//  iOSDeviceError.swift
+//  iOSDeviceServiceError.swift
 //  ReconCore
 //
 //  Created by Shahrukh on 26/01/2026.
@@ -7,9 +7,9 @@
 
 import Foundation
 
-enum iOSDeviceError: Error, LocalizedError {
+enum iOSDeviceServiceError: Error, LocalizedError {
     case noDevicesFound
-    case invalidPropertyList
+    case invalidDeviceId
     case backupFailed(errorCode: Int?, message: String)
     case backupAborted
     case connectionFailed(udid: String, code: Int32)
@@ -20,8 +20,8 @@ enum iOSDeviceError: Error, LocalizedError {
         switch self {
         case .noDevicesFound:
             return "No devices found"
-        case .invalidPropertyList:
-            return "Invalid property list format"
+        case .invalidDeviceId:
+            return "Invalid device UUID"
         case .backupFailed(let errorCode, let message):
             if let errorCode = errorCode {
                 return "Backup failed with error code \(errorCode): \(message)"
