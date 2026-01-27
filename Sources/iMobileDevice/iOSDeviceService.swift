@@ -3,6 +3,9 @@ import Foundation
 /// Service class for interacting with iOS devices
 public class iOSDeviceService: iOSDeviceServiceType {
     
+    private var currentBackupTask: Task<Int, Error>?
+    private var isCancelled: Bool = false
+
     // MARK: - Initialization
     
     public init() {}
@@ -173,8 +176,59 @@ public class iOSDeviceService: iOSDeviceServiceType {
     public func createBackup(
         udid: String?,
         backupPath: String,
-        forceFull: Bool
+        forceFull: Bool,
+        progressHandler: ((Float) -> Void)? = nil
     ) async throws -> Int {
+
+        currentBackupTask = Task<Int, Error> {
+            // Check for cancellation before starting
+            try Task.checkCancellation()
+            
+            // Monitor for cancellation in background
+            let cancellationTask = Task {
+                while !isCancelled {
+                    try? await Task.sleep(nanoseconds: 100_000_000) // Check every 0.1s
+                }
+                // Task was cancelled, signal C code to stop
+                idevicebackup2_cancel()
+                isCancelled = false
+                return 0
+            }
+            
+            defer {
+                cancellationTask.cancel()
+            }
+            
+            // Run the backup
+            return try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        let result = try self.performBackup(
+                            udid: udid,
+                            backupPath: backupPath,
+                            forceFull: forceFull,
+                            progressHandler: progressHandler
+                        )
+                        continuation.resume(returning: result)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        }
+        
+        defer {
+            currentBackupTask = nil
+        }
+        return try await currentBackupTask?.value ?? 0
+    }
+    
+    private func performBackup(
+        udid: String?,
+        backupPath: String,
+        forceFull: Bool,
+        progressHandler: ((Float) -> Void)? = nil
+    ) throws -> Int {
         // Validate backup directory
         let fileManager = FileManager.default
         let backupURL = URL(fileURLWithPath: backupPath)
@@ -225,9 +279,27 @@ public class iOSDeviceService: iOSDeviceServiceType {
         }
         argv[args.count] = nil // NULL terminator
         
+        // NEW: Setup progress callback if provided
+        var handler: BackupProgressHandler?
+        var userdata: UnsafeMutableRawPointer?
+        if let progressHandler = progressHandler {
+            handler = BackupProgressHandler(progressClosure: progressHandler)
+            userdata = Unmanaged.passUnretained(handler!).toOpaque()
+        }
+
         // Call the main function directly from idevicebackup2.c
-        let result = idevicebackup2_main(argc, argv)
+        let result = idevicebackup2_main(
+            argc,
+            argv,
+            handler != nil ? BackupProgressHandler.cCallback : nil,
+            userdata
+        )
         
+        // Keep handler alive until function returns
+        withExtendedLifetime(handler) {
+            // Handler stays alive during the C call
+        }
+
         if result == 0 {
             // Success - count files in backup directory
             let fileCount = countFilesInBackup(backupPath: backupPath, udid: deviceUDID)
@@ -235,6 +307,12 @@ public class iOSDeviceService: iOSDeviceServiceType {
         } else {
             throw iOSDeviceServiceError.backupFailed(errorCode: Int(result), message: "Backup process failed with code \(result)")
         }
+    }
+    
+    // Allow cancellation
+    public func cancelBackup() {
+        currentBackupTask?.cancel()
+        isCancelled = true
     }
 }
 
@@ -327,6 +405,41 @@ extension iOSDeviceService {
 
 // MARK: - C Function Declaration
 
+/// Progress callback type matching C: void (*)(float, void*)
+typealias ProgressCallback = @convention(c) (Float, UnsafeMutableRawPointer?) -> Void
+
 /// Direct call to main() from idevicebackup2.c (renamed to idevicebackup2_main)
+/// Now includes progress_callback and callback_userdata parameters
 @_silgen_name("idevicebackup2_main")
-private func idevicebackup2_main(_ argc: Int32, _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
+private func idevicebackup2_main(
+    _ argc: Int32,
+    _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+    _ progress_callback: ProgressCallback?,
+    _ callback_userdata: UnsafeMutableRawPointer?
+) -> Int32
+
+@_silgen_name("idevicebackup2_cancel")
+private func idevicebackup2_cancel()
+
+// MARK: - Progress Handler
+
+class BackupProgressHandler {
+    typealias ProgressClosure = (Float) -> Void
+    
+    private var progressClosure: ProgressClosure?
+    
+    init(progressClosure: @escaping ProgressClosure) {
+        self.progressClosure = progressClosure
+    }
+    
+    // This is the C callback that will be called from the C code
+    static let cCallback: ProgressCallback = { (progress, userdata) in
+        guard let userdata = userdata else { return }
+        
+        // Convert the raw pointer back to our handler
+        let handler = Unmanaged<BackupProgressHandler>.fromOpaque(userdata).takeUnretainedValue()
+        
+        // Call the Swift closure
+        handler.progressClosure?(progress)
+    }
+}

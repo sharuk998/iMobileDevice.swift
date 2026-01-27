@@ -26,6 +26,9 @@ public protocol iOSDeviceServiceType {
     func createBackup(
         udid: String?,
         backupPath: String,
-        forceFull: Bool
+        forceFull: Bool,
+        progressHandler: ((Float) -> Void)?
     ) async throws -> Int
+    
+    func cancelBackup()
 }
