@@ -191,8 +191,7 @@ public class iOSDeviceService: iOSDeviceServiceType {
                 }
                 // Task was cancelled, signal C code to stop
                 idevicebackup2_cancel()
-                isCancelled = false
-                return 0
+                throw iOSDeviceServiceError.backupAborted
             }
             
             defer {
@@ -305,7 +304,11 @@ public class iOSDeviceService: iOSDeviceServiceType {
             let fileCount = countFilesInBackup(backupPath: backupPath, udid: deviceUDID)
             return fileCount
         } else {
-            throw iOSDeviceServiceError.backupFailed(errorCode: Int(result), message: "Backup process failed with code \(result)")
+            let error = isCancelled
+            ? iOSDeviceServiceError.backupAborted
+            : .backupFailed(errorCode: Int(result), message: "Backup process failed with code \(result)")
+            isCancelled = false
+            throw error
         }
     }
     
